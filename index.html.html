@@ -1,0 +1,1683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Urban Microclimate &amp; Fieldwork Data Collector</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- Space Grotesk: geometric, technical feel for headings/data.
+     Inter: neutral, highly legible sans-serif for body text and form fields. -->
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<!-- Leaflet: an open-source mapping library — draws real map tiles and lets
+     us plot our GPS points on top of them. Loaded from cdnjs (Cloudflare),
+     the same CDN Chart.js below uses — a more reliable choice than unpkg,
+     which some school/office networks and ad-blockers quietly block,
+     causing every script after it to fail with "L is not defined". -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" referrerpolicy="no-referrer">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" referrerpolicy="no-referrer"></script>
+<!-- Chart.js: draws the correlation scatter plot. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js" referrerpolicy="no-referrer"></script>
+
+<style>
+  /* =========================================================
+     DESIGN TOKENS
+  ========================================================= */
+  :root {
+    --bg: #eef1f4;             /* app background: cool, near-white */
+    --surface: #ffffff;        /* cards */
+    --ink: #171e29;            /* primary text: deep slate, near-black */
+    --ink-soft: #5b6472;       /* secondary text */
+    --line: #dde2e8;           /* hairline borders */
+    --slate: #3b4453;          /* mid slate, used for chips/labels */
+
+    --teal: #0f9b8e;           /* primary accent */
+    --teal-dark: #0c7d73;
+    --teal-tint: #e3f5f3;
+
+    --blue: #2f6fed;           /* secondary accent, used for data/GPS elements */
+    --blue-tint: #e9f0fe;
+
+    --risk-low: #0f9b8e;       /* score gauge: low vulnerability */
+    --risk-mid: #d0932c;       /* score gauge: mid vulnerability */
+    --risk-high: #d1483b;      /* score gauge: high vulnerability */
+
+    --radius: 14px;
+    --font-display: "Space Grotesk", sans-serif;
+    --font-body: "Inter", sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-body);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3 { font-family: var(--font-display); margin: 0; }
+  p { margin: 0; }
+  button { font-family: inherit; cursor: pointer; }
+  input, select { font-family: inherit; }
+
+  /* The whole app sits in a fixed-width column even on desktop — this is
+     a fieldwork tool meant to be used one-handed on a phone, so we design
+     it like a native mobile app first and treat desktop as a preview of
+     that same layout, rather than stretching it wide. */
+  .app {
+    max-width: 480px;
+    margin: 0 auto;
+    min-height: 100vh;
+    background: var(--bg);
+    padding-bottom: 48px;
+  }
+
+  /* =========================================================
+     APP BAR
+  ========================================================= */
+  .app-bar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--ink);
+    color: #fff;
+    padding: 20px 20px 18px;
+    border-bottom: 3px solid var(--teal);
+  }
+  .app-bar h1 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .app-bar p {
+    font-size: 0.82rem;
+    color: #aab3c2;
+    margin-top: 4px;
+  }
+
+  /* =========================================================
+     GENERIC CARD
+  ========================================================= */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin: 16px 16px 0;
+  }
+  .card h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .card .card-sub {
+    font-size: 0.85rem;
+    color: var(--ink-soft);
+    margin-bottom: 16px;
+  }
+
+  /* =========================================================
+     GEOLOCATION CARD
+  ========================================================= */
+  .gps-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .gps-btn {
+    flex-shrink: 0;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: none;
+    background: var(--teal);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s ease, transform 0.15s ease;
+  }
+  .gps-btn:hover { background: var(--teal-dark); }
+  .gps-btn:active { transform: scale(0.94); }
+  .gps-btn:disabled { background: #a9b0ba; cursor: not-allowed; }
+  .gps-btn svg { width: 26px; height: 26px; }
+
+  .gps-readout { flex: 1; }
+  .gps-coords {
+    font-family: var(--font-display);
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .gps-status {
+    font-size: 0.82rem;
+    color: var(--ink-soft);
+    margin-top: 2px;
+  }
+  .gps-status.error { color: var(--risk-high); }
+  .gps-status.ok { color: var(--teal-dark); }
+
+  /* Spin animation used while GPS is locating */
+  .spin { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* =========================================================
+     FORM
+  ========================================================= */
+  .field { margin-bottom: 18px; }
+  .field:last-child { margin-bottom: 0; }
+  .field label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--slate);
+    margin-bottom: 6px;
+  }
+  .field .hint {
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    margin-top: 4px;
+  }
+  .text-input, .select-input, .number-input {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    font-size: 0.95rem;
+    color: var(--ink);
+    background: #fbfcfd;
+  }
+  .text-input:focus, .select-input:focus, .number-input:focus {
+    outline: none;
+    border-color: var(--teal);
+    box-shadow: 0 0 0 3px var(--teal-tint);
+  }
+
+  /* Slider */
+  .slider-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  input[type="range"] {
+    flex: 1;
+    appearance: none;
+    height: 6px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--teal) 0%, var(--risk-mid) 50%, var(--risk-high) 100%);
+    outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    appearance: none;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #fff;
+    border: 3px solid var(--ink);
+    cursor: pointer;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #fff;
+    border: 3px solid var(--ink);
+    cursor: pointer;
+  }
+  .slider-value {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 0.95rem;
+    min-width: 48px;
+    text-align: right;
+  }
+
+  /* Live actual-vs-perceived temperature readout, shown under the slider */
+  #actualTempReadout {
+    color: var(--ink-soft);
+  }
+
+  /* File input for the site photo, styled to match the other form fields */
+  .file-input {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    font-size: 0.85rem;
+    background: #fbfcfd;
+    color: var(--ink-soft);
+  }
+  .photo-preview {
+    max-width: 100%;
+    max-height: 160px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    margin-top: 10px;
+    display: block;
+  }
+  .photo-thumb {
+    width: 40px;
+    height: 40px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid var(--line);
+    cursor: pointer;
+  }
+
+  /* Checkboxes, styled as tappable chips rather than tiny native boxes —
+     much easier to hit accurately while walking and holding a phone. */
+  .chip-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .chip-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 0.85rem;
+    background: #fbfcfd;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .chip-check input { accent-color: var(--teal); width: 16px; height: 16px; }
+  .chip-check.checked {
+    border-color: var(--teal);
+    background: var(--teal-tint);
+    color: var(--teal-dark);
+    font-weight: 600;
+  }
+
+  .log-btn {
+    width: 100%;
+    margin-top: 22px;
+    padding: 14px;
+    border: none;
+    border-radius: 10px;
+    background: var(--ink);
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.95rem;
+  }
+  .log-btn:hover { background: #000; }
+  .log-btn:disabled { background: #b7bec9; cursor: not-allowed; }
+
+  .form-note {
+    font-size: 0.8rem;
+    color: var(--ink-soft);
+    margin-top: 10px;
+    text-align: center;
+  }
+
+  /* =========================================================
+     DATA TABLE
+  ========================================================= */
+  .table-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+  .count-pill {
+    background: var(--blue-tint);
+    color: var(--blue);
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 999px;
+  }
+  .table-scroll {
+    overflow-x: auto;
+    margin-top: 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 640px;
+    font-size: 0.82rem;
+  }
+  th, td {
+    padding: 10px 12px;
+    text-align: left;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--line);
+  }
+  th {
+    background: #f5f7f9;
+    color: var(--slate);
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: none;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  .badge-list { display: flex; gap: 4px; flex-wrap: wrap; }
+  .infra-badge {
+    background: var(--teal-tint);
+    color: var(--teal-dark);
+    font-size: 0.7rem;
+    padding: 2px 7px;
+    border-radius: 999px;
+  }
+  .score-pill {
+    display: inline-block;
+    min-width: 34px;
+    text-align: center;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-weight: 700;
+    color: #fff;
+    font-family: var(--font-display);
+  }
+  .empty-row td {
+    text-align: center;
+    color: var(--ink-soft);
+    padding: 28px 12px;
+    font-style: italic;
+  }
+
+  .export-btn {
+    width: 100%;
+    margin-top: 16px;
+    padding: 13px;
+    border: 1px solid var(--teal);
+    border-radius: 10px;
+    background: #fff;
+    color: var(--teal-dark);
+    font-weight: 600;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+  .export-btn:hover { background: var(--teal-tint); }
+  .export-btn:disabled {
+    border-color: var(--line);
+    color: var(--ink-soft);
+    cursor: not-allowed;
+    background: #fff;
+  }
+  .export-btn.geojson-btn {
+    margin-top: 10px;
+    border-color: var(--blue);
+    color: var(--blue);
+  }
+  .export-btn.geojson-btn:hover { background: var(--blue-tint); }
+
+  /* =========================================================
+     MAP VIEW
+  ========================================================= */
+  #mapView {
+    width: 100%;
+    height: 260px;
+    border-radius: 10px;
+    margin-top: 4px;
+    background: #dde2e8; /* shows while tiles load */
+  }
+  .map-legend {
+    display: flex;
+    gap: 14px;
+    margin-top: 12px;
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+  }
+  .map-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .legend-dot {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .map-hint {
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    margin-top: 10px;
+  }
+  .current-pos-icon {
+    font-size: 26px;
+    line-height: 1;
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));
+  }
+  .map-load-error {
+    padding: 20px;
+    font-size: 0.82rem;
+    color: var(--ink-soft);
+    text-align: center;
+  }
+
+  /* =========================================================
+     CORRELATION EXPLORER
+  ========================================================= */
+  .axis-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .axis-field { flex: 1; }
+  .axis-field label {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--slate);
+    margin-bottom: 5px;
+  }
+  #correlationChart {
+    max-height: 240px;
+  }
+  .chart-empty {
+    text-align: center;
+    color: var(--ink-soft);
+    font-size: 0.85rem;
+    padding: 40px 12px;
+    font-style: italic;
+  }
+
+  /* Row highlighting — used when a table row is linked to a clicked map
+     marker or chart point, so it's obvious which record you're looking at. */
+  tbody tr.row-highlight {
+    background: var(--blue-tint);
+  }
+  tbody tr {
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  tbody tr:hover { background: #f5f7f9; }
+
+  .clear-btn {
+    width: 100%;
+    margin-top: 12px;
+    padding: 10px;
+    border: none;
+    background: transparent;
+    color: var(--risk-high);
+    font-size: 0.82rem;
+    font-weight: 600;
+    text-decoration: underline;
+  }
+  .clear-btn:disabled {
+    color: var(--ink-soft);
+    opacity: 0.5;
+    cursor: not-allowed;
+    text-decoration: none;
+  }
+  .src-tag { font-size: 0.7rem; color: var(--ink-soft); }
+  .popup-link {
+    margin-top: 6px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--blue);
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-decoration: underline;
+  }
+  .lightbox {
+    position: fixed;
+    inset: 0;
+    background: rgba(23, 30, 41, 0.88);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 1000;
+    cursor: zoom-out;
+  }
+  .lightbox[hidden] { display: none; }
+  .lightbox img { max-width: 100%; max-height: 100%; border-radius: 10px; }
+
+  footer {
+    margin: 32px 16px 0;
+    font-size: 0.75rem;
+    color: var(--ink-soft);
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <div class="app-bar">
+    <h1>Urban Microclimate Collector</h1>
+    <p>GPS-tagged fieldwork logging for street-level heat exposure studies</p>
+  </div>
+
+  <!-- =========================================================
+       1. GEOLOCATION CARD
+  ========================================================= -->
+  <div class="card">
+    <h2>Current position</h2>
+    <p class="card-sub">Capture GPS coordinates before logging an observation.</p>
+
+    <div class="gps-row">
+      <button class="gps-btn" id="gpsBtn" aria-label="Get current location">
+        <svg id="gpsIcon" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M12 2v3M12 19v3M22 12h-3M5 12H2"></path>
+          <circle cx="12" cy="12" r="8"></circle>
+        </svg>
+      </button>
+      <div class="gps-readout">
+        <div class="gps-coords" id="gpsCoords">No location yet</div>
+        <div class="gps-status" id="gpsStatus">Tap the button to fetch GPS coordinates</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================================================
+       2. FIELDWORK FORM
+  ========================================================= -->
+  <div class="card">
+    <h2>Log an observation</h2>
+    <p class="card-sub">Fill this in at each stop along your survey route.</p>
+
+    <div class="field">
+      <label for="locationName">Study location name</label>
+      <input class="text-input" type="text" id="locationName" placeholder="e.g. Mong Kok, Sai Yeung Choi St">
+    </div>
+
+    <div class="field">
+      <label for="canyonType">Sky view factor / street canyon type</label>
+      <select class="select-input" id="canyonType">
+        <option value="Deep Urban Canyon">Deep Urban Canyon</option>
+        <option value="Partially Shaded">Partially Shaded</option>
+        <option value="Open Plaza">Open Plaza</option>
+        <option value="Public Park">Public Park</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="pedestrianCount">Estimated pedestrian count (per minute)</label>
+      <input class="number-input" type="number" id="pedestrianCount" min="0" placeholder="e.g. 45">
+    </div>
+
+    <div class="field">
+      <label for="tempSlider">Local temperature / thermal feeling</label>
+      <div class="slider-row">
+        <input type="range" id="tempSlider" min="15" max="45" value="28" step="1">
+        <div class="slider-value"><span id="tempValue">28</span>°C</div>
+      </div>
+      <p class="hint" id="actualTempReadout">Air temperature (Open-Meteo model): set your position to fetch it.</p>
+    </div>
+
+    <div class="field">
+      <label>Urban infrastructure present</label>
+      <div class="chip-grid" id="infraGrid">
+        <label class="chip-check"><input type="checkbox" value="Street Trees"> Street Trees</label>
+        <label class="chip-check"><input type="checkbox" value="Water Feature"> Water Feature</label>
+        <label class="chip-check"><input type="checkbox" value="Shading Canopy"> Shading Canopy</label>
+        <label class="chip-check"><input type="checkbox" value="Concrete-only Ground"> Concrete-only Ground</label>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="photoInput">Site photo (optional)</label>
+      <!-- capture="environment" hints mobile browsers to open the rear
+           camera directly, rather than just a generic file picker. -->
+      <input class="file-input" type="file" accept="image/*" capture="environment" id="photoInput">
+      <img class="photo-preview" id="photoPreview" style="display:none;" alt="Selected site photo preview">
+    </div>
+
+    <button class="log-btn" id="logBtn" disabled>Log observation</button>
+    <p class="form-note" id="formNote">Fetch GPS coordinates above to enable logging.</p>
+  </div>
+
+  <!-- =========================================================
+       3. MAP VIEW
+       Plots every logged observation at its real GPS coordinates,
+       so patterns in the data (e.g. hot spots clustering in deep
+       canyons, cooler spots near parks) are visible against the
+       actual streets and terrain, not just as rows in a table.
+  ========================================================= -->
+  <div class="card">
+    <h2>Map view</h2>
+    <p class="card-sub">Tap a point to see its details and jump to its row below.</p>
+    <div id="mapView"></div>
+    <p class="map-hint">Tap anywhere on the map to set your position manually — useful when GPS can't get a fix in a deep urban canyon.</p>
+    <div class="map-legend">
+      <span><span class="legend-dot" style="background:#0f9b8e"></span>Low (1–4.4)</span>
+      <span><span class="legend-dot" style="background:#d0932c"></span>Mid (4.5–6.9)</span>
+      <span><span class="legend-dot" style="background:#d1483b"></span>High (7–10)</span>
+    </div>
+  </div>
+
+  <!-- =========================================================
+       4. CORRELATION EXPLORER
+       Lets you pick any two recorded variables and plot them
+       against each other, so you can check for yourself whether
+       e.g. pedestrian count actually tracks with heat score in
+       your own dataset, rather than assuming it does.
+  ========================================================= -->
+  <div class="card">
+    <h2>Correlation explorer</h2>
+    <p class="card-sub">Choose two variables to plot against each other.</p>
+    <div class="axis-row">
+      <div class="axis-field">
+        <label for="xAxisSelect">X axis</label>
+        <select class="select-input" id="xAxisSelect">
+          <option value="temperature">Temperature (°C)</option>
+          <option value="pedestrianCount">Pedestrian count</option>
+          <option value="score">Heat vulnerability score</option>
+        </select>
+      </div>
+      <div class="axis-field">
+        <label for="yAxisSelect">Y axis</label>
+        <select class="select-input" id="yAxisSelect">
+          <option value="score">Heat vulnerability score</option>
+          <option value="temperature">Temperature (°C)</option>
+          <option value="pedestrianCount">Pedestrian count</option>
+        </select>
+      </div>
+    </div>
+    <canvas id="correlationChart"></canvas>
+    <div class="chart-empty" id="chartEmpty">Log at least one observation to see the chart.</div>
+  </div>
+
+  <!-- =========================================================
+       5. DATA TABLE
+  ========================================================= -->
+  <div class="card">
+    <div class="table-header-row">
+      <h2>Fieldwork log</h2>
+      <span class="count-pill" id="countPill">0 records</span>
+    </div>
+    <p class="card-sub">Every logged observation appears here, newest first.</p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Location</th>
+            <th>Coordinates</th>
+            <th>Nearest address</th>
+            <th>Canyon type</th>
+            <th>Pedestrians</th>
+            <th>Perceived</th>
+            <th>Air temp (model)</th>
+            <th>Infrastructure</th>
+            <th>Heat score</th>
+            <th>Photo</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody">
+          <tr class="empty-row"><td colspan="12">No observations logged yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <button class="export-btn" id="exportBtn" disabled>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="7 10 12 15 17 10"></polyline>
+        <line x1="12" y1="15" x2="12" y2="3"></line>
+      </svg>
+      Export to CSV
+    </button>
+    <button class="export-btn geojson-btn" id="geojsonBtn" disabled>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 10c0 7-9 12-9 12s-9-5-9-12a9 9 0 0 1 18 0z"></path>
+        <circle cx="12" cy="10" r="3"></circle>
+      </svg>
+      Export to GeoJSON
+    </button>
+    <button class="clear-btn" id="clearBtn" disabled>Clear all saved data</button>
+  </div>
+
+  <footer>Built for street-level fieldwork · saved to this device · map tiles &amp; address lookup need an internet connection</footer>
+
+</div>
+
+<!-- Full-size photo viewer. Browsers block navigating to data: URLs
+     (what window.open() on a base64 image tries to do), so thumbnails
+     open in this in-page overlay instead. -->
+<div class="lightbox" id="lightbox" hidden>
+  <img id="lightboxImg" alt="Full-size site photo">
+</div>
+
+<script>
+/* =========================================================
+   APP STATE
+   `observations` holds every logged row as a plain JS object.
+   The table and the CSV export are both just different ways
+   of rendering this one array, so it's the single source of
+   truth for the whole app.
+========================================================= */
+let observations = [];
+let currentPosition = null; // will hold { lat, lon } once GPS succeeds
+let nextObservationId = 1;  // simple incrementing id so the map, chart and
+                             // table can all refer to "the same" observation
+const STORAGE_KEY = "urbanMicroclimateObservations"; // localStorage key
+let selectedObservationId = null; // which row/pin is currently highlighted
+let photoProcessing = false;      // true while a photo is being compressed
+
+// Escapes characters that have special meaning in HTML. Anything the user
+// types (e.g. a location name) is put into the page via innerHTML, so
+// without this a name like "<b>" would be treated as markup, not text.
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/* =========================================================
+   1. GEOLOCATION API
+   navigator.geolocation is a browser API — no external library
+   or server needed. getCurrentPosition() asks the OS for a GPS
+   fix and calls one of two callbacks: success or error.
+========================================================= */
+const gpsBtn = document.getElementById("gpsBtn");
+const gpsIcon = document.getElementById("gpsIcon");
+const gpsCoords = document.getElementById("gpsCoords");
+const gpsStatus = document.getElementById("gpsStatus");
+const logBtn = document.getElementById("logBtn");
+const formNote = document.getElementById("formNote");
+
+gpsBtn.addEventListener("click", () => {
+  // Not every browser/device exposes geolocation (e.g. some desktop
+  // browsers without permission, or non-HTTPS pages) — always check first.
+  if (!("geolocation" in navigator)) {
+    gpsStatus.textContent = "Geolocation isn't supported on this device/browser.";
+    gpsStatus.className = "gps-status error";
+    return;
+  }
+
+  // Give the user feedback that something is happening while we wait —
+  // a GPS fix outdoors can take a couple of seconds.
+  gpsIcon.classList.add("spin");
+  gpsBtn.disabled = true;
+  gpsStatus.textContent = "Locating…";
+  gpsStatus.className = "gps-status";
+
+  navigator.geolocation.getCurrentPosition(
+    // ---- success callback ----
+    (position) => {
+      gpsIcon.classList.remove("spin");
+      gpsBtn.disabled = false;
+
+      const accuracy = position.coords.accuracy; // metres of uncertainty
+      applyPosition(
+        position.coords.latitude,
+        position.coords.longitude,
+        `GPS fix — accurate to ±${Math.round(accuracy)}m`,
+        "GPS",
+        Math.round(accuracy)
+      );
+    },
+    // ---- error callback ----
+    (error) => {
+      gpsIcon.classList.remove("spin");
+      gpsBtn.disabled = false;
+
+      // error.code tells us which of three things went wrong.
+      let message = "Couldn't get your location.";
+      if (error.code === error.PERMISSION_DENIED) {
+        message = "Location permission denied — enable it in browser settings.";
+      } else if (error.code === error.POSITION_UNAVAILABLE) {
+        message = "Position unavailable — try again outdoors, or tap the map below to set it manually.";
+      } else if (error.code === error.TIMEOUT) {
+        message = "Location request timed out — try again, or tap the map below to set it manually.";
+      }
+      gpsStatus.textContent = message;
+      gpsStatus.className = "gps-status error";
+    },
+    // ---- options ----
+    {
+      enableHighAccuracy: true, // prefer GPS chip over coarse wifi/IP location
+      timeout: 12000,
+      maximumAge: 0            // never reuse a stale cached position
+    }
+  );
+});
+
+// Shared by both position sources — the GPS button above, and tapping the
+// map to drop a pin manually (added in section 6, "Urban canyon fix" for
+// when GPS can't get a fix between tall buildings). Both end up calling
+// this one function, so the rest of the app never needs to know or care
+// which source the coordinates came from.
+function applyPosition(lat, lon, statusText, source, accuracyM) {
+  // `source` ("GPS" or "Manual pin") and accuracy are stored with every
+  // observation, so anyone analysing the data later can tell a precise GPS
+  // fix apart from a hand-placed pin — basic data provenance.
+  currentPosition = { lat, lon, source, accuracyM };
+
+  gpsCoords.textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  gpsStatus.textContent = statusText;
+  gpsStatus.className = "gps-status ok";
+
+  logBtn.disabled = false;
+  formNote.textContent = "Location captured — fill in the form and log your observation.";
+
+  updatePositionMarker(lat, lon); // safe no-op if the map failed to load
+  fetchActualTemperature(lat, lon);
+}
+
+/* =========================================================
+   2. FORM — LIVE READOUTS
+========================================================= */
+const tempSlider = document.getElementById("tempSlider");
+const tempValue = document.getElementById("tempValue");
+const actualTempReadout = document.getElementById("actualTempReadout");
+let currentActualTemperature = null; // filled in by fetchActualTemperature()
+
+tempSlider.addEventListener("input", () => {
+  tempValue.textContent = tempSlider.value;
+  renderActualTempReadout(); // keep the "warmer/cooler than actual" text live as the slider moves
+});
+
+// Style each checkbox's parent chip when it's checked, purely visual.
+document.querySelectorAll(".chip-check input").forEach(checkbox => {
+  checkbox.addEventListener("change", () => {
+    checkbox.closest(".chip-check").classList.toggle("checked", checkbox.checked);
+  });
+});
+
+// Site photo: compress it with a <canvas> before storing (see
+// compressImage() just below), then keep it as a base64 data URL so it
+// can be dropped straight into an <img src="..."> and saved to
+// localStorage — no server or upload step needed for a portfolio tool.
+const photoInput = document.getElementById("photoInput");
+const photoPreview = document.getElementById("photoPreview");
+let pendingPhotoDataUrl = null;
+
+photoInput.addEventListener("change", async () => {
+  const file = photoInput.files[0];
+  if (!file) {
+    pendingPhotoDataUrl = null;
+    photoPreview.style.display = "none";
+    return;
+  }
+  // Block logging while compression runs, otherwise tapping "Log
+  // observation" too quickly would silently save the entry without its photo.
+  photoProcessing = true;
+  logBtn.disabled = true;
+  try {
+    pendingPhotoDataUrl = await compressImage(file, 500, 0.6);
+    photoPreview.src = pendingPhotoDataUrl;
+    photoPreview.style.display = "block";
+  } catch (err) {
+    // Compression failed (corrupt file, unsupported format) — just skip
+    // the photo rather than blocking the rest of the form.
+    pendingPhotoDataUrl = null;
+    photoPreview.style.display = "none";
+  } finally {
+    photoProcessing = false;
+    logBtn.disabled = !currentPosition;
+  }
+});
+
+// Mobile camera photos are often several MB each — far too large to store
+// many of as base64 strings in localStorage, which most browsers cap
+// around 5MB in total. This draws the image onto an off-screen <canvas>
+// at a much smaller size and re-exports it as a compressed JPEG, shrinking
+// a multi-MB photo down to roughly a few tens of KB.
+function compressImage(file, maxDimension, quality) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        // Scale down proportionally so the longer side is maxDimension.
+        let { width, height } = img;
+        if (width > height && width > maxDimension) {
+          height = Math.round(height * (maxDimension / width));
+          width = maxDimension;
+        } else if (height >= width && height > maxDimension) {
+          width = Math.round(width * (maxDimension / height));
+          height = maxDimension;
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+
+        // toDataURL re-encodes as JPEG at the given quality (0–1), which is
+        // where most of the file-size saving actually comes from.
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = () => reject(new Error("Couldn't read image file"));
+      img.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error("Couldn't read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+/* =========================================================
+   3. SMART CITY ALGORITHM
+   A small, transparent heuristic — not a validated scientific
+   model, but a defensible, explainable scoring formula you can
+   walk an interviewer through step by step.
+
+   Score starts at a neutral midpoint (5) and each factor nudges
+   it up (more heat-vulnerable) or down (less vulnerable), then
+   we clamp the result to a 1–10 range.
+========================================================= */
+function calculateHeatVulnerabilityScore({ canyonType, temperature, pedestrianCount, infrastructure }) {
+  let score = 5;
+
+  // Street canyon type: tall buildings on both sides trap heat and block
+  // wind, while open parks with vegetation cool the air (evapotranspiration).
+  const canyonEffect = {
+    "Deep Urban Canyon": 2,
+    "Partially Shaded": 0.5,
+    "Open Plaza": -0.5,
+    "Public Park": -1.5
+  };
+  score += canyonEffect[canyonType] ?? 0;
+
+  // Temperature: every degree above a 25°C baseline adds a small amount
+  // of risk; every degree below it subtracts.
+  score += (temperature - 25) * 0.15;
+
+  // Pedestrian density: more people means more body heat and more waste
+  // heat from things like idling vehicles and shopfront air-con units.
+  if (pedestrianCount > 300) score += 2;
+  else if (pedestrianCount > 100) score += 1;
+  else if (pedestrianCount > 30) score += 0.5;
+
+  // Infrastructure: green and blue infrastructure cool a space down;
+  // bare concrete absorbs and re-radiates heat (the "urban heat island" effect).
+  if (infrastructure.includes("Street Trees")) score -= 1;
+  if (infrastructure.includes("Water Feature")) score -= 1;
+  if (infrastructure.includes("Shading Canopy")) score -= 1;
+  if (infrastructure.includes("Concrete-only Ground")) score += 1.5;
+
+  // Clamp to the 1–10 range and round to one decimal place.
+  score = Math.max(1, Math.min(10, score));
+  return Math.round(score * 10) / 10;
+}
+
+function scoreColor(score) {
+  if (score >= 7) return "var(--risk-high)";
+  if (score >= 4.5) return "var(--risk-mid)";
+  return "var(--risk-low)";
+}
+
+// Same thresholds as scoreColor(), but returning literal hex values —
+// Leaflet markers and Chart.js points need a real color, not a CSS variable.
+function scoreColorHex(score) {
+  if (score >= 7) return "#d1483b";
+  if (score >= 4.5) return "#d0932c";
+  return "#0f9b8e";
+}
+
+/* =========================================================
+   4. REVERSE GEOCODING
+   Turns raw coordinates into a place name a human would
+   recognise, using the free Nominatim API (OpenStreetMap's
+   geocoder). This is a plain fetch() call — no API key needed.
+   We only call it once per logged observation (not on every
+   keystroke or GPS update), which keeps us well within
+   Nominatim's fair-use limits.
+========================================================= */
+async function reverseGeocode(lat, lon) {
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1`;
+    const response = await fetch(url, { headers: { "Accept": "application/json" } });
+    if (!response.ok) throw new Error("Reverse geocode request failed");
+
+    const data = await response.json();
+    const a = data.address || {};
+    // Prefer a short, human-scale description over the long formal address.
+    const short = [a.road, a.suburb || a.neighbourhood, a.town || a.city]
+      .filter(Boolean)
+      .join(", ");
+    return short || data.display_name || "Unnamed area";
+  } catch (err) {
+    // Offline, rate-limited, or the API is down — fail quietly rather than
+    // blocking the rest of the app.
+    return "Address lookup unavailable";
+  }
+}
+
+/* =========================================================
+   5. LIVE WEATHER (Open-Meteo)
+   Open-Meteo is a free weather API that needs no API key or
+   sign-up — just a plain fetch() with latitude/longitude. We
+   use it to pull the modelled air temperature for the
+   observation's position, so it can be compared against what
+   the fieldworker perceived on the thermal slider. Important
+   caveat: this is weather-MODEL output on a grid roughly 1–11 km
+   wide, not a thermometer reading at your exact street. So the
+   gap between "perceived" and "model" mixes together subjective
+   feeling AND the street-scale effects (canyon trapping, shade,
+   concrete) that a coarse model can't see — which is exactly the
+   kind of limitation worth stating in a methodology write-up.
+========================================================= */
+let weatherRequestId = 0; // lets us ignore out-of-date responses (see below)
+
+async function fetchActualTemperature(lat, lon) {
+  // If you tap the map several times quickly, several requests are in
+  // flight at once and replies can arrive out of order. Numbering each
+  // request lets us discard any reply that isn't from the latest tap.
+  const requestId = ++weatherRequestId;
+  actualTempReadout.textContent = "Air temperature (Open-Meteo model): fetching…";
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m`;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("Weather request failed");
+
+    const data = await response.json();
+    if (requestId !== weatherRequestId) return; // a newer request superseded this one
+    currentActualTemperature = data.current.temperature_2m;
+  } catch (err) {
+    // No internet, or the API is temporarily down — don't block logging,
+    // just show that live weather isn't available right now.
+    if (requestId !== weatherRequestId) return;
+    currentActualTemperature = null;
+  }
+  renderActualTempReadout();
+}
+
+// Separated from the fetch itself so moving the slider (no new network
+// request needed) and a fresh weather fetch both update the same text.
+function renderActualTempReadout() {
+  if (currentActualTemperature === null) {
+    actualTempReadout.textContent = "Air temperature (Open-Meteo model): unavailable right now";
+    return;
+  }
+  const perceived = Number(tempSlider.value);
+  const diff = perceived - currentActualTemperature;
+  let comparison = "matches the model";
+  if (diff > 0.2) comparison = `you feel ${diff.toFixed(1)}°C warmer than the model`;
+  else if (diff < -0.2) comparison = `you feel ${Math.abs(diff).toFixed(1)}°C cooler than the model`;
+
+  actualTempReadout.textContent = `Air temperature (Open-Meteo model): ${currentActualTemperature}°C — ${comparison}`;
+}
+
+/* =========================================================
+   6. LOGGING AN OBSERVATION
+========================================================= */
+const tableBody = document.getElementById("tableBody");
+const countPill = document.getElementById("countPill");
+const exportBtn = document.getElementById("exportBtn");
+const geojsonBtn = document.getElementById("geojsonBtn");
+const clearBtn = document.getElementById("clearBtn");
+
+document.getElementById("logBtn").addEventListener("click", () => {
+  if (!currentPosition || photoProcessing) return; // safety check — button is disabled in both cases anyway
+
+  const infrastructure = Array.from(
+    document.querySelectorAll(".chip-check input:checked")
+  ).map(cb => cb.value);
+
+  const observation = {
+    id: nextObservationId++,
+    locationName: document.getElementById("locationName").value || "Unnamed location",
+    lat: currentPosition.lat,
+    lon: currentPosition.lon,
+    positionSource: currentPosition.source,   // "GPS" or "Manual pin"
+    gpsAccuracyM: currentPosition.accuracyM,  // metres, or null for a manual pin
+    canyonType: document.getElementById("canyonType").value,
+    pedestrianCount: Math.max(0, Number(document.getElementById("pedestrianCount").value) || 0), // no negatives
+    temperature: Number(tempSlider.value),
+    actualTemperature: currentActualTemperature, // null if the weather fetch failed
+    infrastructure: infrastructure,
+    photoDataUrl: pendingPhotoDataUrl, // null if no photo was attached (already compressed, see compressImage())
+    timestamp: new Date(),
+    placeName: "Looking up address…" // filled in a moment later, see below
+  };
+
+  observation.score = calculateHeatVulnerabilityScore(observation);
+
+  // Newest entries at the top of the array (and therefore the table).
+  observations.unshift(observation);
+  renderTable();
+  addOrUpdateMarker(observation);
+  updateChart();
+  saveToLocalStorage();
+
+  // Reset the photo field so the next observation starts with a blank slate.
+  photoInput.value = "";
+  pendingPhotoDataUrl = null;
+  photoPreview.style.display = "none";
+
+  // The row is already visible with a placeholder address, so this network
+  // request never blocks the UI — it just fills in a moment later.
+  reverseGeocode(observation.lat, observation.lon).then(placeName => {
+    observation.placeName = placeName;
+    renderTable();
+    addOrUpdateMarker(observation); // refresh the popup text too
+    saveToLocalStorage(); // keep the saved copy in sync with the resolved address
+  });
+});
+
+function renderTable() {
+  countPill.textContent = `${observations.length} record${observations.length === 1 ? "" : "s"}`;
+  exportBtn.disabled = observations.length === 0;
+  geojsonBtn.disabled = observations.length === 0;
+  clearBtn.disabled = observations.length === 0;
+
+  if (observations.length === 0) {
+    tableBody.innerHTML = `<tr class="empty-row"><td colspan="12">No observations logged yet</td></tr>`;
+    return;
+  }
+
+  tableBody.innerHTML = observations.map((obs, i) => {
+    const rowNumber = observations.length - i; // count up from 1 at the oldest entry
+    const badges = obs.infrastructure.map(item => `<span class="infra-badge">${escapeHtml(item)}</span>`).join("");
+    // Date AND time: a log spanning several days would be ambiguous with time alone.
+    const timeStr = obs.timestamp.toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+    const sourceTag = obs.positionSource === "GPS" ? `GPS ±${obs.gpsAccuracyM}m`
+                    : obs.positionSource === "Manual pin" ? "Manual pin" : "";
+    const actualStr = (obs.actualTemperature === null || obs.actualTemperature === undefined)
+      ? "—" : `${obs.actualTemperature}°C`;
+    const photoCell = obs.photoDataUrl
+      ? `<img class="photo-thumb" src="${obs.photoDataUrl}" alt="Site photo">`
+      : "—";
+
+    return `
+      <tr id="row-${obs.id}" data-id="${obs.id}">
+        <td>${rowNumber}</td>
+        <td>${escapeHtml(obs.locationName)}</td>
+        <td>${obs.lat.toFixed(5)}, ${obs.lon.toFixed(5)}<br><span class="src-tag">${sourceTag}</span></td>
+        <td>${escapeHtml(obs.placeName)}</td>
+        <td>${escapeHtml(obs.canyonType)}</td>
+        <td>${obs.pedestrianCount}</td>
+        <td>${obs.temperature}°C</td>
+        <td>${actualStr}</td>
+        <td><div class="badge-list">${badges || "—"}</div></td>
+        <td><span class="score-pill" style="background:${scoreColor(obs.score)}">${obs.score}</span></td>
+        <td>${photoCell}</td>
+        <td>${timeStr}</td>
+      </tr>
+    `;
+  }).join("");
+
+  // Clicking a row shows that observation on the map; clicking its photo
+  // thumbnail opens the full-size photo instead.
+  tableBody.querySelectorAll("tr[data-id]").forEach(tr => {
+    tr.addEventListener("click", (event) => {
+      const obs = observations.find(o => o.id === Number(tr.dataset.id));
+      if (!obs) return;
+      if (event.target.closest(".photo-thumb")) {
+        openLightbox(obs.photoDataUrl);
+        return;
+      }
+      showOnMap(obs);
+    });
+  });
+
+  // renderTable() rebuilds every row, which would wipe the highlight —
+  // put it back on whichever observation was selected.
+  if (selectedObservationId !== null) {
+    const selectedRow = document.getElementById(`row-${selectedObservationId}`);
+    if (selectedRow) selectedRow.classList.add("row-highlight");
+  }
+}
+
+/* =========================================================
+   7. MAP VIEW
+   Leaflet draws real OpenStreetMap tiles and lets us drop a
+   marker at each observation's exact GPS coordinates — this is
+   what actually ties your readings to real streets, landforms
+   and features rather than just abstract numbers in a table.
+
+   Defensive note: if the Leaflet script failed to load (blocked
+   network, offline, flaky CDN), `L` won't exist. Rather than let
+   that throw a ReferenceError and silently kill every script
+   after it — which is what was breaking the whole app — we check
+   for it first and let the rest of the app (form, table, CSV,
+   chart) keep working without the map.
+========================================================= */
+let map = null;
+const markersById = {}; // observation id -> Leaflet marker, so we can find one again later
+let currentPositionMarker = null; // the single pin showing "where I am right now"
+
+if (typeof L !== "undefined") {
+  map = L.map("mapView").setView([22.3193, 114.1694], 12); // starting view: Hong Kong
+
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap contributors"
+  }).addTo(map);
+
+  // FEATURE: manual coordinate fallback. GPS often can't get a fix between
+  // tall buildings in a deep urban canyon, so tapping the map sets the
+  // current position directly — it feeds into the exact same
+  // applyPosition() function the GPS button uses.
+  map.on("click", (e) => {
+    const hint = map.getZoom() < 16 ? " — zoom in further for a more precise pin" : "";
+    applyPosition(e.latlng.lat, e.latlng.lng, "Set manually by tapping the map" + hint, "Manual pin", null);
+  });
+} else {
+  document.getElementById("mapView").innerHTML =
+    '<p class="map-load-error">Map failed to load — check your internet connection and refresh the page. Everything else (form, table, CSV export) still works.</p>';
+}
+
+function popupHtml(obs) {
+  const modelStr = (obs.actualTemperature === null || obs.actualTemperature === undefined)
+    ? "n/a" : `${obs.actualTemperature}°C`;
+  return `
+    <strong>${escapeHtml(obs.locationName)}</strong><br>
+    ${escapeHtml(obs.placeName)}<br>
+    ${escapeHtml(obs.canyonType)} · perceived ${obs.temperature}°C · model ${modelStr} · score ${obs.score}<br>
+    <button class="popup-link" onclick="highlightRow(${obs.id}, true)">View in log ↓</button>
+  `;
+}
+
+// Moves (or creates) the single "you are here" pin. Safe to call even if
+// the map failed to load — it just does nothing in that case.
+function updatePositionMarker(lat, lon) {
+  if (!map) return;
+
+  if (currentPositionMarker) {
+    currentPositionMarker.setLatLng([lat, lon]);
+  } else {
+    currentPositionMarker = L.marker([lat, lon], {
+      icon: L.divIcon({
+        className: "current-pos-icon",
+        html: "📍",
+        iconSize: [26, 26],
+        iconAnchor: [13, 26]
+      })
+    }).addTo(map);
+  }
+  map.setView([lat, lon], Math.max(map.getZoom(), 15));
+}
+
+function addOrUpdateMarker(obs) {
+  if (!map) return; // no map library loaded — the table/chart/CSV still work fine
+
+  const existing = markersById[obs.id];
+  if (existing) {
+    // Already on the map (e.g. the address just resolved) — just refresh it.
+    existing.setPopupContent(popupHtml(obs));
+    existing.setStyle({ fillColor: scoreColorHex(obs.score) });
+    return;
+  }
+
+  const marker = L.circleMarker([obs.lat, obs.lon], {
+    // Without this, tapping an existing pin ALSO counts as a tap on the
+    // map underneath it, which would trigger the manual-position fallback
+    // and silently move your "current position" to wherever you tapped.
+    bubblingMouseEvents: false,
+    radius: 9,
+    weight: 2,
+    color: "#ffffff",
+    fillColor: scoreColorHex(obs.score),
+    fillOpacity: 0.9
+  }).addTo(map);
+
+  marker.bindPopup(popupHtml(obs));
+  marker.on("click", () => highlightRow(obs.id));
+  markersById[obs.id] = marker;
+}
+
+function panToObservation(obs) {
+  if (!map) return;
+  map.setView([obs.lat, obs.lon], Math.max(map.getZoom(), 15));
+  const marker = markersById[obs.id];
+  if (marker) marker.openPopup();
+}
+
+/* =========================================================
+   8. CORRELATION EXPLORER
+   A Chart.js scatter plot lets you actually check, against your
+   own logged data, whether two variables move together — e.g.
+   whether higher pedestrian counts really do line up with a
+   higher heat score in the readings you've taken — instead of
+   just assuming the relationship the scoring formula assumes.
+========================================================= */
+const xAxisSelect = document.getElementById("xAxisSelect");
+const yAxisSelect = document.getElementById("yAxisSelect");
+const chartCanvas = document.getElementById("correlationChart");
+const chartEmpty = document.getElementById("chartEmpty");
+
+const axisLabels = {
+  temperature: "Temperature (°C)",
+  pedestrianCount: "Pedestrian count",
+  score: "Heat vulnerability score"
+};
+
+let correlationChart = null;
+
+function updateChart() {
+  // Same defensive pattern as the map: if Chart.js failed to load, skip
+  // drawing instead of throwing and taking the rest of the app down.
+  if (typeof Chart === "undefined") {
+    chartCanvas.style.display = "none";
+    chartEmpty.style.display = "block";
+    chartEmpty.textContent = "Chart library failed to load — check your internet connection.";
+    return;
+  }
+
+  if (observations.length === 0) {
+    chartCanvas.style.display = "none";
+    chartEmpty.style.display = "block";
+    return;
+  }
+  chartCanvas.style.display = "block";
+  chartEmpty.style.display = "none";
+
+  const xKey = xAxisSelect.value;
+  const yKey = yAxisSelect.value;
+
+  // Each plotted point carries the observation's id, so a click on the
+  // chart can be traced straight back to its row and its map marker.
+  const points = observations.map(obs => ({ x: obs[xKey], y: obs[yKey], id: obs.id }));
+  const colors = observations.map(obs => scoreColorHex(obs.score));
+
+  if (correlationChart) correlationChart.destroy(); // simplest way to redraw cleanly
+
+  correlationChart = new Chart(chartCanvas, {
+    type: "scatter",
+    data: {
+      datasets: [{
+        data: points,
+        backgroundColor: colors,
+        pointRadius: 6,
+        pointHoverRadius: 8
+      }]
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { title: { display: true, text: axisLabels[xKey] } },
+        y: { title: { display: true, text: axisLabels[yKey] } }
+      },
+      onClick: (event, elements) => {
+        if (!elements.length) return;
+        const point = points[elements[0].index];
+        const obs = observations.find(o => o.id === point.id);
+        if (!obs) return;
+        showOnMap(obs);
+      }
+    }
+  });
+}
+
+xAxisSelect.addEventListener("change", updateChart);
+yAxisSelect.addEventListener("change", updateChart);
+
+/* =========================================================
+   9. LINKING TABLE, MAP AND CHART
+   One shared function so all three views point at the same
+   observation in sync, no matter which one you clicked first.
+========================================================= */
+// Highlights a row. It only scrolls the page when asked to (e.g. from the
+// "View in log" link in a map popup) — scrolling automatically when you tap
+// a pin would yank the map out of view, along with the popup you just opened.
+function highlightRow(id, scrollToRow = false) {
+  selectedObservationId = id;
+  document.querySelectorAll("#tableBody tr").forEach(tr => tr.classList.remove("row-highlight"));
+  const row = document.getElementById(`row-${id}`);
+  if (row) {
+    row.classList.add("row-highlight");
+    if (scrollToRow) row.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+}
+
+// Used when you select something from the table or chart (both sit BELOW
+// the map): highlight it, centre the map on it, and scroll the map into view
+// so the result of your tap is actually visible.
+function showOnMap(obs) {
+  highlightRow(obs.id);
+  if (!map) return;
+  panToObservation(obs);
+  document.getElementById("mapView").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+/* =========================================================
+   10. CSV EXPORT — for QGIS / ArcGIS / Excel
+   The trick: build a plain text string in CSV format, wrap it
+   in a Blob (an in-memory file-like object), turn that Blob into
+   a temporary URL, and "click" a hidden <a download> link pointing
+   at it. The browser then handles it exactly like downloading any
+   other file — no server or backend involved.
+========================================================= */
+exportBtn.addEventListener("click", () => {
+  if (observations.length === 0) return;
+
+  // CSV header row. Latitude/Longitude are split into their own columns
+  // (rather than one combined "coordinates" column) because GIS software
+  // like QGIS and ArcGIS expects separate numeric X/Y fields to plot points.
+  // Photos aren't included as image data — CSV is a plain-text format, so
+  // we just note whether one was attached; the photo itself lives only in
+  // this browser session (see the comment on pendingPhotoDataUrl above).
+  const headers = [
+    "Location Name", "Latitude", "Longitude", "Position Source", "GPS Accuracy (m)",
+    "Nearest Address", "Canyon Type", "Pedestrian Count", "Perceived Temp (C)",
+    "Open-Meteo Air Temp (C)", "Infrastructure", "Heat Vulnerability Score",
+    "Has Photo", "Timestamp (UTC)"
+  ];
+
+  const rows = observations.map(obs => [
+    obs.locationName,
+    obs.lat,
+    obs.lon,
+    obs.positionSource ?? "Unknown",
+    obs.gpsAccuracyM ?? "n/a",
+    obs.placeName,
+    obs.canyonType,
+    obs.pedestrianCount,
+    obs.temperature,
+    obs.actualTemperature ?? "n/a",
+    obs.infrastructure.join("; "),   // semicolon so it doesn't clash with the comma delimiter
+    obs.score,
+    obs.photoDataUrl ? "Yes" : "No",
+    obs.timestamp.toISOString()
+  ]);
+
+  // Wrap every field in quotes and escape any quotes inside the text itself
+  // (e.g. a location name containing a comma) — this is standard CSV escaping.
+  function escapeCsvField(field) {
+    let str = String(field).replace(/"/g, '""');
+    // "CSV injection" guard: if a TEXT field starts with = + - @ (or a tab/CR),
+    // Excel can treat it as a formula and run it when the file is opened.
+    // A leading apostrophe forces it to be read as plain text. We only do this
+    // for strings, so negative numbers like a longitude of -0.12 are untouched.
+    if (typeof field === "string" && /^[=+\-@\t\r]/.test(str)) str = "'" + str;
+    return `"${str}"`;
+  }
+
+  const csvLines = [headers, ...rows].map(row => row.map(escapeCsvField).join(","));
+  const csvContent = csvLines.join("\r\n");
+
+  // A Blob is a file-like object of raw data. Giving it a MIME type of
+  // "text/csv" tells the browser how to treat it once downloaded.
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+
+  // Create an <a> tag that isn't visible on the page, point it at the
+  // Blob's temporary URL, and simulate a click — this is the standard
+  // vanilla-JS pattern for triggering a client-side file download.
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `fieldwork-log-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+
+  // Release the temporary URL now that the download has started.
+  URL.revokeObjectURL(url);
+});
+
+/* =========================================================
+   11. GEOJSON EXPORT
+   GeoJSON is the standard interchange format most GIS software
+   (QGIS, ArcGIS, Mapbox, Leaflet itself) can read directly. A
+   FeatureCollection is just an array of Features; each Feature
+   pairs a geometry (here, a Point) with a properties object
+   holding everything else about that observation.
+========================================================= */
+geojsonBtn.addEventListener("click", () => {
+  if (observations.length === 0) return;
+
+  const featureCollection = {
+    type: "FeatureCollection",
+    features: observations.map(obs => ({
+      type: "Feature",
+      geometry: {
+        type: "Point",
+        // GeoJSON coordinate order is [longitude, latitude] — the
+        // opposite of how we normally say them out loud, and a very
+        // common bug if you forget it.
+        coordinates: [obs.lon, obs.lat]
+      },
+      properties: {
+        locationName: obs.locationName,
+        placeName: obs.placeName,
+        canyonType: obs.canyonType,
+        pedestrianCount: obs.pedestrianCount,
+        perceivedTemperature: obs.temperature,
+        openMeteoAirTemperature: obs.actualTemperature, // modelled air temp from Open-Meteo, null if unavailable
+        positionSource: obs.positionSource ?? "Unknown", // "GPS" or "Manual pin"
+        gpsAccuracyM: obs.gpsAccuracyM ?? null,
+        infrastructure: obs.infrastructure,
+        heatVulnerabilityScore: obs.score,
+        hasPhoto: Boolean(obs.photoDataUrl), // the photo itself is left out — a base64
+                                              // image would bloat the file hugely and
+                                              // isn't standard GeoJSON practice
+        timestamp: obs.timestamp.toISOString()
+      }
+    }))
+  };
+
+  const blob = new Blob([JSON.stringify(featureCollection, null, 2)], {
+    type: "application/geo+json"
+  });
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "fieldwork.geojson";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+
+  URL.revokeObjectURL(url);
+});
+
+/* =========================================================
+   12. LOCAL STORAGE PERSISTENCE
+   Saves every logged observation to the browser's localStorage,
+   so an accidental refresh mid-fieldwork doesn't wipe out the
+   data. This is per-device, per-browser storage — it doesn't
+   sync anywhere else, which is exactly why regular CSV/GeoJSON
+   export still matters for actually keeping your data safe.
+========================================================= */
+function saveToLocalStorage() {
+  try {
+    // Date objects can't be stored directly in JSON, so convert each
+    // timestamp to a plain ISO string first.
+    const serializable = observations.map(obs => ({
+      ...obs,
+      timestamp: obs.timestamp.toISOString()
+    }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(serializable));
+  } catch (err) {
+    // Most likely a quota error — localStorage is usually capped around
+    // 5MB, and enough uncompressed photos could still exceed that even
+    // after compression. Fail quietly rather than blocking logging.
+    console.warn("Couldn't save to localStorage:", err);
+    formNote.textContent = "Note: on-device storage is full — recent entries may not be saved for next time.";
+  }
+}
+
+function loadFromLocalStorage() {
+  let saved;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    saved = JSON.parse(raw);
+  } catch (err) {
+    return; // corrupted or inaccessible storage — just start with a blank log
+  }
+  if (!Array.isArray(saved) || saved.length === 0) return;
+
+  // Turn the ISO date strings back into real Date objects.
+  observations = saved.map(obs => ({ ...obs, timestamp: new Date(obs.timestamp) }));
+
+  // Carry on numbering new observations after the highest restored id,
+  // so a freshly logged point can never collide with a restored one.
+  nextObservationId = Math.max(...observations.map(obs => obs.id)) + 1;
+
+  renderTable();
+  updateChart();
+  observations.forEach(obs => addOrUpdateMarker(obs));
+
+  // If the page was refreshed before an address lookup finished, that entry
+  // would be stuck on "Looking up address…" forever, so retry those now.
+  // Staggered by ~1.1s each to respect Nominatim's one-request-per-second rule.
+  observations
+    .filter(obs => obs.placeName === "Looking up address…")
+    .forEach((obs, i) => {
+      setTimeout(() => {
+        reverseGeocode(obs.lat, obs.lon).then(placeName => {
+          obs.placeName = placeName;
+          renderTable();
+          addOrUpdateMarker(obs);
+          saveToLocalStorage();
+        });
+      }, i * 1100);
+    });
+
+  // Zoom the map out to fit every restored point, if the map loaded.
+  if (map && Object.keys(markersById).length > 0) {
+    const bounds = L.featureGroup(Object.values(markersById)).getBounds();
+    if (bounds.isValid()) map.fitBounds(bounds, { padding: [24, 24] });
+  }
+
+  formNote.textContent = observations.length === 1
+    ? "Restored 1 observation from your last session."
+    : `Restored ${observations.length} observations from your last session.`;
+}
+
+/* =========================================================
+   13. CLEAR DATA + PHOTO VIEWER
+========================================================= */
+// Because data now persists between visits, you need a way to start a
+// fresh study — otherwise old test entries would stay forever.
+clearBtn.addEventListener("click", () => {
+  if (observations.length === 0) return;
+  const ok = confirm(`Delete all ${observations.length} saved observation(s) from this device? Export first if you want to keep them.`);
+  if (!ok) return;
+
+  observations = [];
+  selectedObservationId = null;
+  try { localStorage.removeItem(STORAGE_KEY); } catch (err) { /* storage unavailable — nothing to clear */ }
+
+  // Remove every observation pin from the map and forget it.
+  Object.keys(markersById).forEach(id => {
+    markersById[id].remove();
+    delete markersById[id];
+  });
+
+  renderTable();
+  updateChart();
+  formNote.textContent = "All saved observations cleared.";
+});
+
+const lightbox = document.getElementById("lightbox");
+const lightboxImg = document.getElementById("lightboxImg");
+function openLightbox(src) {
+  lightboxImg.src = src;
+  lightbox.hidden = false;
+}
+lightbox.addEventListener("click", () => { lightbox.hidden = true; });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") lightbox.hidden = true; });
+
+// Run once, after every function above has been defined: draw the empty
+// chart state, then repopulate from whatever was saved last visit.
+updateChart();
+loadFromLocalStorage();
+</script>
+</body>
+</html>
